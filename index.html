@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><meta name="theme-color" content="#0f172a">
@@ -9,7 +9,15 @@
 <body class="bg-slate-50 text-slate-800"><div id="app"></div><div id="toast" class="fixed bottom-5 left-5 z-[100] space-y-2"></div>
 <script type="module">
 import{initializeApp}from"https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";import{getAuth,signInWithEmailAndPassword,createUserWithEmailAndPassword,signOut,onAuthStateChanged}from"https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";import{getFirestore,collection,doc,getDoc,getDocs,addDoc,setDoc,deleteDoc,query,where,runTransaction,serverTimestamp}from"https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
-const firebaseConfig={apiKey:"AIzaSyDkfllpodJQvGcemzcr6FIDLNjdoJN-cws",authDomain:"tawreedak-saas.firebaseapp.com",projectId:"tawreedak-saas",storageBucket:"tawreedak-saas.firebasestorage.app",messagingSenderId:"745887419455",appId:"1:745887419455:web:0478e1a4950328d917fc8a",measurementId:"G-L5TQT2TRMD"};
+const firebaseConfig = {
+  apiKey: "AIzaSyDkfllpodJQvGcemzcr6FIDLNjdoJN-cws",
+  authDomain: "tawreedak-saas.firebaseapp.com",
+  projectId: "tawreedak-saas",
+  storageBucket: "tawreedak-saas.firebasestorage.app",
+  messagingSenderId: "745887419455",
+  appId: "1:745887419455:web:0478e1a4950328d917fc8a",
+  measurementId: "G-L5TQT2TRMD"
+};
 const app=initializeApp(firebaseConfig),auth=getAuth(app),db=getFirestore(app);const S={user:null,profile:null,company:null,view:"dashboard",customers:[],products:[],quotes:[],followups:[]};const $=s=>document.querySelector(s),esc=x=>String(x??"").replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])),money=n=>Number(n||0).toLocaleString('ar-EG',{minimumFractionDigits:2,maximumFractionDigits:2})+' ج.م',date=x=>{if(!x)return'-';const d=x?.toDate?x.toDate():new Date(x);return isNaN(d.getTime())?'-':d.toLocaleDateString('ar-EG')};
 function icon(n,s=18){return`<i data-lucide="${n}" width="${s}" height="${s}"></i>`}function icons(){try{lucide.createIcons()}catch{}}function toast(m,bad=false){const e=document.createElement('div');e.className=`${bad?'bg-red-600':'bg-slate-900'} text-white px-4 py-3 rounded-xl shadow-xl text-sm font-bold`;e.textContent=m;$('#toast').append(e);setTimeout(()=>e.remove(),3000)}
 async function userData(uid){const x=await getDoc(doc(db,'users',uid));if(!x.exists())throw Error('بيانات المستخدم غير موجودة');return x.data()}async function company(id){const x=await getDoc(doc(db,'companies',id));return x.exists()?{id:x.id,...x.data()}:null}async function list(col,id){const q=query(collection(db,col),where('companyId','==',id));const s=await getDocs(q);return s.docs.map(x=>({id:x.id,...x.data()}))}async function load(){S.company=await company(S.profile.companyId);[S.customers,S.products,S.quotes,S.followups]=await Promise.all(['customers','products','quotes','followups'].map(c=>list(c,S.profile.companyId)));render()}
