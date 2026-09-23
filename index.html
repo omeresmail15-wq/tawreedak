@@ -18,7 +18,16 @@ const firebaseConfig = {
   appId: "1:745887419455:web:0478e1a4950328d917fc8a",
   measurementId: "G-L5TQT2TRMD"
 };
-const app=initializeApp(firebaseConfig),auth=getAuth(app),db=getFirestore(app);const S={user:null,profile:null,company:null,view:"dashboard",customers:[],products:[],quotes:[],followups:[]};const $=s=>document.querySelector(s),esc=x=>String(x??"").replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])),money=n=>Number(n||0).toLocaleString('ar-EG',{minimumFractionDigits:2,maximumFractionDigits:2})+' ج.م',date=x=>{if(!x)return'-';const d=x?.toDate?x.toDate():new Date(x);return isNaN(d.getTime())?'-':d.toLocaleDateString('ar-EG')};
+const app = initializeApp(firebaseConfig);
+
+const auth = getAuth(app);
+
+const db = getFirestore(app);
+
+console.log("Firebase App:", app);
+console.log("Firebase Auth:", auth);
+console.log("Firebase Project:", app.options.projectId);
+console.log("Firebase API Key:", app.options.apiKey);
 function icon(n,s=18){return`<i data-lucide="${n}" width="${s}" height="${s}"></i>`}function icons(){try{lucide.createIcons()}catch{}}function toast(m,bad=false){const e=document.createElement('div');e.className=`${bad?'bg-red-600':'bg-slate-900'} text-white px-4 py-3 rounded-xl shadow-xl text-sm font-bold`;e.textContent=m;$('#toast').append(e);setTimeout(()=>e.remove(),3000)}
 async function userData(uid){const x=await getDoc(doc(db,'users',uid));if(!x.exists())throw Error('بيانات المستخدم غير موجودة');return x.data()}async function company(id){const x=await getDoc(doc(db,'companies',id));return x.exists()?{id:x.id,...x.data()}:null}async function list(col,id){const q=query(collection(db,col),where('companyId','==',id));const s=await getDocs(q);return s.docs.map(x=>({id:x.id,...x.data()}))}async function load(){S.company=await company(S.profile.companyId);[S.customers,S.products,S.quotes,S.followups]=await Promise.all(['customers','products','quotes','followups'].map(c=>list(c,S.profile.companyId)));render()}
 function authError(m){if(m.includes('invalid-credential'))return'البريد أو كلمة المرور غير صحيحة.';if(m.includes('email-already-in-use'))return'البريد مستخدم بالفعل.';if(m.includes('weak-password'))return'كلمة المرور يجب أن تكون 6 أحرف على الأقل.';return m}
