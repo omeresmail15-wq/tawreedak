@@ -12,30 +12,24 @@
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800&display=swap');
 
-body {
-  font-family: Cairo, sans-serif;
+body{
+  font-family:Cairo,sans-serif
 }
-
-.card {
-  background: #fff;
-  border: 1px solid #e2e8f0;
-  border-radius: 18px;
-  box-shadow: 0 8px 30px rgba(15,23,42,.05);
+.card{
+  background:#fff;
+  border:1px solid #e2e8f0;
+  border-radius:18px;
+  box-shadow:0 8px 30px rgba(15,23,42,.05)
 }
-
-input, select, textarea {
-  outline: none;
+input,select,textarea{
+  outline:none
 }
-
-input:focus, select:focus, textarea:focus {
-  border-color: #2563eb;
-  box-shadow: 0 0 0 3px rgba(37,99,235,.12);
+input:focus,select:focus,textarea:focus{
+  border-color:#2563eb;
+  box-shadow:0 0 0 3px rgba(37,99,235,.12)
 }
-
-@media print {
-  .no-print {
-    display: none !important;
-  }
+@media print{
+  .no-print{display:none!important}
 }
 </style>
 </head>
@@ -79,9 +73,8 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
 
-
 const firebaseConfig = {
-  apiKey: "AIzaSyDkfllpodJqVgcemzcr6FIDLNjdoJN-cws",
+  apiKey: "AIzaSyDkfllpodJQvGcemzcr6FIDLNjdoJN-cws",
   authDomain: "tawreedak-saas.firebaseapp.com",
   projectId: "tawreedak-saas",
   storageBucket: "tawreedak-saas.firebasestorage.app",
@@ -96,18 +89,26 @@ const db = getFirestore(app);
 
 
 /* =========================================================
-   APP STATE
+   GLOBAL STATE
 ========================================================= */
 
 const S = {
   user: null,
   profile: null,
   company: null,
+
+  view: "dashboard",
+
   customers: [],
   products: [],
   quotes: [],
   followups: [],
-  view: "dashboard"
+
+  /* مهم جدًا لمنع onAuthStateChanged
+     من التدخل أثناء إنشاء الحساب */
+  authBusy: false,
+
+  loading: false
 };
 
 
@@ -115,195 +116,429 @@ const S = {
    HELPERS
 ========================================================= */
 
-const $ = (id) => document.getElementById(id);
+const $ = s => document.querySelector(s);
 
-function esc(value) {
-  return String(value ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-}
+const esc = x =>
+  String(x ?? "").replace(/[&<>"']/g,m=>({
+    "&":"&amp;",
+    "<":"&lt;",
+    ">":"&gt;",
+    '"':"&quot;",
+    "'":"&#39;"
+  }[m]));
 
-function money(value) {
-  return Number(value || 0).toLocaleString("ar-EG", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2
+const money = n =>
+  Number(n || 0).toLocaleString("ar-EG",{
+    minimumFractionDigits:2,
+    maximumFractionDigits:2
   }) + " ج.م";
-}
 
-function date(value) {
-  if (!value) return "-";
+const date = x => {
+  if(!x) return "-";
 
-  try {
-    if (value && typeof value.toDate === "function") {
-      return value.toDate().toLocaleDateString("ar-EG");
-    }
+  const d = x?.toDate
+    ? x.toDate()
+    : new Date(x);
 
-    return new Date(value).toLocaleDateString("ar-EG");
-  } catch {
-    return "-";
-  }
-}
+  return isNaN(d.getTime())
+    ? "-"
+    : d.toLocaleDateString("ar-EG");
+};
 
-function icon(name, size = 18) {
+
+/* =========================================================
+   ICONS / TOAST
+========================================================= */
+
+function icon(n,s=18){
   return `
     <i
-      data-lucide="${name}"
-      width="${size}"
-      height="${size}">
+      data-lucide="${n}"
+      width="${s}"
+      height="${s}">
     </i>
   `;
 }
 
-function icons() {
-  try {
-    if (window.lucide) {
-      lucide.createIcons();
-    }
-  } catch (e) {
-    console.warn("Lucide error:", e);
-  }
+function icons(){
+  try{
+    lucide.createIcons();
+  }catch{}
 }
 
-function toast(message, bad = false) {
+function toast(message,bad=false){
 
   const e = document.createElement("div");
 
   e.className =
     `${bad ? "bg-red-600" : "bg-slate-900"}
-     text-white px-4 py-3 rounded-xl shadow-xl
-     text-sm font-bold`;
+     text-white px-4 py-3 rounded-xl
+     shadow-xl text-sm font-bold`;
 
   e.textContent = message;
 
-  $("toast").appendChild(e);
+  $("#toast").append(e);
 
-  setTimeout(() => {
+  setTimeout(()=>{
     e.remove();
-  }, 3000);
+  },4000);
 }
 
 
 /* =========================================================
-   FIREBASE DATA
+   FIREBASE ERROR TRANSLATION
 ========================================================= */
 
-async function userData(uid) {
+function authError(error){
 
-  const x = await getDoc(
-    doc(db, "users", uid)
-  );
+  const code = error?.code || "";
+  const message = error?.message || "";
 
-  if (!x.exists()) {
-    throw new Error("بيانات المستخدم غير موجودة");
+  if(
+    code.includes("invalid-credential") ||
+    code.includes("wrong-password") ||
+    code.includes("user-not-found")
+  ){
+    return "البريد الإلكتروني أو كلمة المرور غير صحيحة.";
   }
 
-  return x.data();
+  if(code.includes("invalid-email")){
+    return "البريد الإلكتروني غير صحيح.";
+  }
+
+  if(code.includes("email-already-in-use")){
+    return "هذا البريد الإلكتروني مستخدم بالفعل.";
+  }
+
+  if(code.includes("weak-password")){
+    return "كلمة المرور يجب أن تكون 6 أحرف على الأقل.";
+  }
+
+  if(code.includes("too-many-requests")){
+    return "تمت محاولات كثيرة. انتظر قليلًا ثم حاول مرة أخرى.";
+  }
+
+  if(code.includes("network-request-failed")){
+    return "يوجد مشكلة في الاتصال بالإنترنت.";
+  }
+
+  if(code.includes("operation-not-allowed")){
+    return "تسجيل الدخول بالبريد الإلكتروني غير مفعل في Firebase Authentication.";
+  }
+
+  if(
+    code.includes("permission-denied") ||
+    message.includes("Missing or insufficient permissions")
+  ){
+    return "تم تسجيل الدخول، لكن Firestore يمنع الوصول إلى البيانات. راجع Firestore Security Rules.";
+  }
+
+  return message || "حدث خطأ غير معروف.";
 }
 
 
-async function company(id) {
+/* =========================================================
+   USER PROFILE
+========================================================= */
+
+/*
+  الدالة القديمة كانت تعمل throw إذا users/{uid}
+  غير موجود، وبعدها onAuthStateChanged كان يعمل signOut.
+
+  الآن نعيد null بدل الحلقة.
+*/
+
+async function userData(uid){
+
+  const snap = await getDoc(
+    doc(db,"users",uid)
+  );
+
+  if(!snap.exists()){
+    return null;
+  }
+
+  return snap.data();
+}
+
+
+/* =========================================================
+   AUTO REPAIR USER PROFILE
+========================================================= */
+
+async function ensureUserProfile(user){
+
+  if(!user){
+    throw new Error("المستخدم غير مسجل الدخول.");
+  }
+
+  const uid = user.uid;
+
+  const userRef = doc(db,"users",uid);
+
+  const userSnap = await getDoc(userRef);
+
+  /* المستخدم موجود بالفعل */
+  if(userSnap.exists()){
+    return userSnap.data();
+  }
+
+
+  /*
+    إذا كان حساب Authentication موجودًا
+    لكن users/{uid} غير موجود:
+
+    ننشئ الشركة بنفس الـ UID
+    وننشئ ملف المستخدم.
+  */
+
+  const companyId = "comp_" + uid;
+
+  const companyRef = doc(
+    db,
+    "companies",
+    companyId
+  );
+
+  const companySnap = await getDoc(companyRef);
+
+
+  /* إنشاء الشركة إذا لم تكن موجودة */
+  if(!companySnap.exists()){
+
+    await setDoc(companyRef,{
+      name: user.email?.split("@")[0] || "شركة جديدة",
+      email: user.email || "",
+      ownerUid: uid,
+
+      createdAt: serverTimestamp(),
+
+      subscriptionPlan: "Free",
+      subscriptionStatus: "active",
+
+      subscriptionStart:
+        new Date().toISOString(),
+
+      subscriptionEnd:
+        new Date(
+          Date.now() + 30 * 864e5
+        ).toISOString()
+    });
+  }
+
+
+  /* إنشاء المستخدم */
+  await setDoc(userRef,{
+    companyId: companyId,
+    name: user.email?.split("@")[0] || "المستخدم",
+    email: user.email || "",
+    role: "Owner",
+    createdAt: serverTimestamp()
+  });
+
+
+  const repaired = await getDoc(userRef);
+
+  if(!repaired.exists()){
+    throw new Error(
+      "تم تسجيل الدخول ولكن تعذر إنشاء بيانات المستخدم في Firestore."
+    );
+  }
+
+  return repaired.data();
+}
+
+
+/* =========================================================
+   COMPANY
+========================================================= */
+
+async function company(id){
+
+  if(!id){
+    throw new Error("معرف الشركة غير موجود.");
+  }
 
   const x = await getDoc(
-    doc(db, "companies", id)
+    doc(db,"companies",id)
   );
 
   return x.exists()
-    ? {
-        id: x.id,
-        ...x.data()
-      }
+    ? {id:x.id,...x.data()}
     : null;
 }
 
 
-async function list(col, companyId) {
+/* =========================================================
+   LIST COLLECTION
+========================================================= */
+
+async function list(col,id){
 
   const q = query(
-    collection(db, col),
-    where("companyId", "==", companyId)
+    collection(db,col),
+    where("companyId","==",id)
   );
 
   const s = await getDocs(q);
 
-  return s.docs.map(x => ({
-    id: x.id,
+  return s.docs.map(x=>({
+    id:x.id,
     ...x.data()
   }));
 }
 
 
-async function load() {
+/* =========================================================
+   LOAD APP DATA
+========================================================= */
 
-  S.company = await company(
-    S.profile.companyId
-  );
+async function load(){
 
-  [
-    S.customers,
-    S.products,
-    S.quotes,
-    S.followups
-  ] = await Promise.all([
-    list("customers", S.profile.companyId),
-    list("products", S.profile.companyId),
-    list("quotes", S.profile.companyId),
-    list("followups", S.profile.companyId)
-  ]);
+  if(!S.profile?.companyId){
+    throw new Error(
+      "لا يوجد companyId في بيانات المستخدم."
+    );
+  }
 
-  render();
+  S.loading = true;
+
+  try{
+
+    S.company =
+      await company(S.profile.companyId);
+
+    if(!S.company){
+
+      throw new Error(
+        "بيانات الشركة غير موجودة في Firestore."
+      );
+    }
+
+
+    [
+      S.customers,
+      S.products,
+      S.quotes,
+      S.followups
+    ] = await Promise.all([
+      list("customers",S.profile.companyId),
+      list("products",S.profile.companyId),
+      list("quotes",S.profile.companyId),
+      list("followups",S.profile.companyId)
+    ]);
+
+    render();
+
+  }finally{
+
+    S.loading = false;
+
+  }
 }
 
 
 /* =========================================================
-   AUTH ERROR
+   AUTH ERROR SCREEN
 ========================================================= */
 
-function authError(message) {
+function renderSystemError(error){
 
-  if (!message) {
-    return "حدث خطأ غير معروف.";
-  }
+  const msg =
+    error?.message ||
+    String(error);
 
-  if (message.includes("invalid-credential")) {
-    return "البريد الإلكتروني أو كلمة المرور غير صحيحة.";
-  }
+  document.body.className =
+    "bg-slate-50 text-slate-800";
 
-  if (message.includes("wrong-password")) {
-    return "كلمة المرور غير صحيحة.";
-  }
+  $("#app").innerHTML = `
 
-  if (message.includes("user-not-found")) {
-    return "المستخدم غير موجود.";
-  }
+    <div class="min-h-screen flex items-center justify-center p-5">
 
-  if (message.includes("email-already-in-use")) {
-    return "البريد الإلكتروني مستخدم بالفعل.";
-  }
+      <div class="card w-full max-w-xl p-7">
 
-  if (message.includes("weak-password")) {
-    return "كلمة المرور يجب أن تكون 6 أحرف على الأقل.";
-  }
+        <div class="w-16 h-16 rounded-2xl
+                    bg-red-100 text-red-600
+                    flex items-center justify-center
+                    mx-auto mb-5">
 
-  if (message.includes("invalid-email")) {
-    return "البريد الإلكتروني غير صحيح.";
-  }
+          ${icon("triangle-alert",30)}
 
-  if (message.includes("api-key-not-valid")) {
-    return "مفتاح Firebase API غير صالح أو غير صحيح.";
-  }
+        </div>
 
-  if (message.includes("operation-not-allowed")) {
-    return "تسجيل الدخول بالبريد الإلكتروني غير مفعل في Firebase.";
-  }
+        <h1 class="text-2xl font-extrabold text-center">
+          تم تسجيل الدخول
+        </h1>
 
-  if (message.includes("network-request-failed")) {
-    return "تعذر الاتصال بالإنترنت أو بخوادم Firebase.";
-  }
+        <p class="text-center text-slate-500 mt-2">
+          لكن حدثت مشكلة أثناء تحميل بيانات الحساب.
+        </p>
 
-  return message;
+        <div class="mt-6 bg-red-50 border border-red-200
+                    rounded-xl p-4">
+
+          <div class="text-xs text-red-500 font-bold mb-2">
+            تفاصيل الخطأ
+          </div>
+
+          <div class="text-sm text-red-700 break-words">
+            ${esc(msg)}
+          </div>
+
+        </div>
+
+        <div class="grid grid-cols-2 gap-3 mt-5">
+
+          <button
+            id="retryApp"
+            class="bg-blue-600 text-white
+                   rounded-xl py-3 font-bold">
+
+            إعادة المحاولة
+
+          </button>
+
+          <button
+            id="errorLogout"
+            class="bg-slate-100
+                   rounded-xl py-3 font-bold">
+
+            تسجيل الخروج
+
+          </button>
+
+        </div>
+
+      </div>
+
+    </div>
+  `;
+
+  icons();
+
+  $("#retryApp").onclick = async()=>{
+
+    try{
+
+      $("#retryApp").textContent =
+        "جارٍ التحميل...";
+
+      S.profile =
+        await ensureUserProfile(S.user);
+
+      await load();
+
+    }catch(e){
+
+      renderSystemError(e);
+
+    }
+
+  };
+
+  $("#errorLogout").onclick = async()=>{
+    await signOut(auth);
+  };
 }
 
 
@@ -311,211 +546,261 @@ function authError(message) {
    AUTH SCREEN
 ========================================================= */
 
-function renderAuth() {
+function renderAuth(){
 
   document.body.className =
     "bg-slate-50 text-slate-800";
 
-  $("app").innerHTML = `
+  $("#app").innerHTML = `
 
-  <div class="min-h-screen grid lg:grid-cols-2">
+    <div class="min-h-screen grid lg:grid-cols-2">
 
-    <div class="hidden lg:flex bg-slate-950 text-white p-12 items-center">
+      <div class="hidden lg:flex
+                  bg-slate-950 text-white
+                  p-12 items-center">
 
-      <div class="max-w-lg mx-auto">
+        <div class="max-w-lg mx-auto">
 
-        <div class="w-16 h-16 rounded-2xl
-                    bg-blue-600 flex items-center
-                    justify-center text-3xl
-                    font-extrabold mb-6">
-          ت
-        </div>
-
-        <h1 class="text-4xl font-extrabold leading-tight">
-          توريدك
-          <br>
-          <span class="text-blue-400">
-            إدارة أعمالك باحتراف.
-          </span>
-        </h1>
-
-        <p class="text-slate-400 mt-5 leading-8">
-          منصة سحابية لإدارة العملاء والمنتجات
-          وعروض الأسعار والمتابعات.
-        </p>
-
-      </div>
-
-    </div>
-
-
-    <div class="flex items-center justify-center p-5">
-
-      <div class="w-full max-w-md">
-
-        <div class="text-center mb-6">
-
-          <div class="w-14 h-14 rounded-2xl
-                      bg-blue-600 text-white
+          <div class="w-16 h-16 rounded-2xl
+                      bg-blue-600
                       flex items-center justify-center
-                      text-2xl font-extrabold
-                      mx-auto mb-3">
+                      text-3xl font-extrabold mb-6">
             ت
           </div>
 
-          <h2 class="text-2xl font-extrabold">
-            توريدك | Tawreedak
-          </h2>
+          <h1 class="text-4xl font-extrabold leading-tight">
 
-          <p class="text-sm text-slate-500">
-            نظام إدارة التوريدات السحابي
+            توريدك
+
+            <br>
+
+            <span class="text-blue-400">
+              إدارة أعمالك باحتراف.
+            </span>
+
+          </h1>
+
+          <p class="text-slate-400 mt-5 leading-8">
+            منصة سحابية لإدارة العملاء والمنتجات
+            وعروض الأسعار والمتابعات.
           </p>
 
         </div>
 
+      </div>
 
-        <div class="card p-6">
 
-          <div class="flex bg-slate-100 p-1 rounded-xl mb-5">
+      <div class="flex items-center
+                  justify-center p-5">
 
-            <button
-              id="lt"
-              type="button"
-              class="flex-1 py-2 rounded-lg bg-white font-bold">
-              دخول
-            </button>
+        <div class="w-full max-w-md">
 
-            <button
-              id="rt"
-              type="button"
-              class="flex-1 py-2 rounded-lg text-slate-500">
-              حساب جديد
-            </button>
+          <div class="text-center mb-6">
+
+            <div class="w-14 h-14 rounded-2xl
+                        bg-blue-600 text-white
+                        flex items-center justify-center
+                        text-2xl font-extrabold
+                        mx-auto mb-3">
+
+              ت
+
+            </div>
+
+            <h2 class="text-2xl font-extrabold">
+              توريدك | Tawreedak
+            </h2>
+
+            <p class="text-sm text-slate-500">
+              نظام إدارة التوريدات السحابي
+            </p>
 
           </div>
 
 
-          <form id="af" class="space-y-3">
+          <div class="card p-6">
 
-            <div id="cb" class="hidden space-y-3">
+            <div class="flex bg-slate-100
+                        p-1 rounded-xl mb-5">
 
-              <input
-                id="cn"
-                class="w-full border rounded-xl px-4 py-3"
-                placeholder="اسم الشركة">
+              <button
+                id="lt"
+                type="button"
+                class="flex-1 py-2 rounded-lg
+                       bg-white font-bold">
 
-              <input
-                id="un"
-                class="w-full border rounded-xl px-4 py-3"
-                placeholder="اسم المسؤول">
+                دخول
+
+              </button>
+
+              <button
+                id="rt"
+                type="button"
+                class="flex-1 py-2 rounded-lg
+                       text-slate-500">
+
+                حساب جديد
+
+              </button>
 
             </div>
 
 
-            <input
-              id="em"
-              type="email"
-              required
-              class="w-full border rounded-xl px-4 py-3"
-              placeholder="البريد الإلكتروني">
+            <form id="af" class="space-y-3">
+
+              <div id="cb"
+                   class="hidden space-y-3">
+
+                <input
+                  id="cn"
+                  class="w-full border rounded-xl px-4 py-3"
+                  placeholder="اسم الشركة">
+
+                <input
+                  id="un"
+                  class="w-full border rounded-xl px-4 py-3"
+                  placeholder="اسم المسؤول">
+
+              </div>
 
 
-            <input
-              id="pw"
-              type="password"
-              required
-              minlength="6"
-              class="w-full border rounded-xl px-4 py-3"
-              placeholder="كلمة المرور">
+              <input
+                id="em"
+                type="email"
+                required
+                class="w-full border rounded-xl px-4 py-3"
+                placeholder="البريد الإلكتروني">
 
 
-            <button
-              type="submit"
-              class="w-full bg-blue-600
-                     hover:bg-blue-700
-                     text-white py-3
-                     rounded-xl font-extrabold">
-              متابعة
-            </button>
+              <input
+                id="pw"
+                type="password"
+                required
+                minlength="6"
+                class="w-full border rounded-xl px-4 py-3"
+                placeholder="كلمة المرور">
 
 
-            <div
-              id="ae"
-              class="text-center text-xs text-red-600">
-            </div>
+              <button
+                id="submitAuth"
+                type="submit"
+                class="w-full bg-blue-600
+                       text-white py-3
+                       rounded-xl font-extrabold">
 
-          </form>
+                متابعة
+
+              </button>
+
+
+              <div
+                id="ae"
+                class="text-center text-xs text-red-600">
+              </div>
+
+            </form>
+
+          </div>
 
         </div>
 
       </div>
 
     </div>
-
-  </div>
   `;
 
 
   let reg = false;
 
 
-  $("rt").onclick = () => {
+  $("#rt").onclick = ()=>{
 
     reg = true;
 
-    $("cb").classList.remove("hidden");
+    $("#cb").classList.remove("hidden");
 
-    $("rt").className =
+    $("#rt").className =
       "flex-1 py-2 rounded-lg bg-white font-bold";
 
-    $("lt").className =
+    $("#lt").className =
       "flex-1 py-2 rounded-lg text-slate-500";
+
   };
 
 
-  $("lt").onclick = () => {
+  $("#lt").onclick = ()=>{
 
     reg = false;
 
-    $("cb").classList.add("hidden");
+    $("#cb").classList.add("hidden");
 
-    $("lt").className =
+    $("#lt").className =
       "flex-1 py-2 rounded-lg bg-white font-bold";
 
-    $("rt").className =
+    $("#rt").className =
       "flex-1 py-2 rounded-lg text-slate-500";
+
   };
 
 
-  $("af").onsubmit = async e => {
+  $("#af").onsubmit = async e=>{
 
     e.preventDefault();
 
-    $("ae").textContent =
-      "جارٍ التنفيذ...";
+    const errorBox = $("#ae");
+    const button = $("#submitAuth");
 
-    try {
+    errorBox.textContent = "";
+    button.disabled = true;
+    button.textContent = "جارٍ التنفيذ...";
+
+
+    /*
+      أهم سطر في الحل:
+
+      نوقف onAuthStateChanged مؤقتًا
+      أثناء التسجيل.
+    */
+
+    S.authBusy = true;
+
+
+    try{
 
       const email =
-        $("em").value.trim();
+        $("#em").value.trim();
 
       const password =
-        $("pw").value;
+        $("#pw").value;
 
 
-      if (reg) {
+      /* ================================
+         REGISTRATION
+      ================================= */
 
-        if (
-          !$("cn").value.trim() ||
-          !$("un").value.trim()
-        ) {
+      if(reg){
+
+        const companyName =
+          $("#cn").value.trim();
+
+        const userName =
+          $("#un").value.trim();
+
+
+        if(!companyName || !userName){
+
           throw new Error(
             "اكتب اسم الشركة واسم المسؤول."
           );
+
         }
 
 
-        const c =
+        /*
+          إنشاء مستخدم Firebase
+        */
+
+        const credential =
           await createUserWithEmailAndPassword(
             auth,
             email,
@@ -523,56 +808,144 @@ function renderAuth() {
           );
 
 
-        const id =
-          "comp_" + c.user.uid;
+        const uid =
+          credential.user.uid;
 
+        const companyId =
+          "comp_" + uid;
+
+
+        /*
+          إنشاء الشركة
+        */
 
         await setDoc(
-          doc(db, "companies", id),
+          doc(db,"companies",companyId),
           {
-            name: $("cn").value.trim(),
-            email: email,
-            createdAt: serverTimestamp(),
-            subscriptionPlan: "Free",
-            subscriptionStatus: "active",
+            name:companyName,
+            email:email,
+            ownerUid:uid,
+
+            createdAt:serverTimestamp(),
+
+            subscriptionPlan:"Free",
+            subscriptionStatus:"active",
+
             subscriptionStart:
               new Date().toISOString(),
+
             subscriptionEnd:
               new Date(
-                Date.now() + 30 * 864e5
+                Date.now()+30*864e5
               ).toISOString()
           }
         );
 
 
+        /*
+          إنشاء المستخدم
+        */
+
+        const profile = {
+          companyId:companyId,
+          name:userName,
+          email:email,
+          role:"Owner",
+          createdAt:serverTimestamp()
+        };
+
+
         await setDoc(
-          doc(db, "users", c.user.uid),
-          {
-            companyId: id,
-            name: $("un").value.trim(),
-            email: email,
-            role: "Owner",
-            createdAt: serverTimestamp()
-          }
+          doc(db,"users",uid),
+          profile
         );
 
-      } else {
 
-        await signInWithEmailAndPassword(
-          auth,
-          email,
-          password
-        );
+        /*
+          نضع البيانات مباشرة
+          بدل انتظار Auth Observer
+        */
+
+        S.user = credential.user;
+
+        S.profile = {
+          companyId:companyId,
+          name:userName,
+          email:email,
+          role:"Owner"
+        };
+
+
+        await load();
+
+
+        toast("تم إنشاء الحساب بنجاح");
 
       }
 
-    } catch (x) {
 
-      console.error("Auth error:", x);
+      /* ================================
+         LOGIN
+      ================================= */
 
-      $("ae").textContent =
-        authError(x.message);
+      else{
+
+        const credential =
+          await signInWithEmailAndPassword(
+            auth,
+            email,
+            password
+          );
+
+
+        /*
+          إصلاح الحساب تلقائيًا إذا كان
+          موجودًا في Authentication
+          لكن بيانات Firestore ناقصة.
+        */
+
+        S.user = credential.user;
+
+        S.profile =
+          await ensureUserProfile(
+            credential.user
+          );
+
+
+        await load();
+
+
+        toast("تم تسجيل الدخول بنجاح");
+
+      }
+
+
+    }catch(x){
+
+      S.authBusy = false;
+
+      console.error(
+        "AUTH ERROR:",
+        x
+      );
+
+      errorBox.textContent =
+        authError(x);
+
+    }finally{
+
+      /*
+        لا نغلق authBusy قبل انتهاء
+        العملية بالكامل.
+      */
+
+      S.authBusy = false;
+
+      button.disabled = false;
+      button.textContent = "متابعة";
+
     }
+
   };
 }
 
@@ -582,45 +955,56 @@ function renderAuth() {
 ========================================================= */
 
 const nav = [
-  ["dashboard", "لوحة التحكم", "layout-dashboard"],
-  ["customers", "العملاء", "users"],
-  ["products", "المنتجات", "package"],
-  ["quotes", "عروض الأسعار", "file-text"],
-  ["followups", "المتابعات", "bell"]
+
+  ["dashboard","لوحة التحكم","layout-dashboard"],
+
+  ["customers","العملاء","users"],
+
+  ["products","المنتجات","package"],
+
+  ["quotes","عروض الأسعار","file-text"],
+
+  ["followups","المتابعات","bell"]
+
 ];
 
 
 /* =========================================================
-   MAIN SHELL
+   SHELL
 ========================================================= */
 
-function shell() {
+function shell(){
 
   return `
 
   <div class="min-h-screen lg:pr-64">
 
     <aside
-      class="no-print hidden lg:flex fixed right-0
-             inset-y-0 w-64 bg-slate-950
-             text-white flex-col z-40">
+      class="no-print hidden lg:flex
+             fixed right-0 inset-y-0
+             w-64 bg-slate-950 text-white
+             flex-col z-40">
 
-      <div
-        class="p-5 border-b border-white/10
-               flex items-center gap-3">
+      <div class="p-5 border-b border-white/10
+                  flex items-center gap-3">
 
-        <div
-          class="w-11 h-11 rounded-2xl
-                 bg-blue-600 flex items-center
-                 justify-center font-extrabold text-xl">
+        <div class="w-11 h-11 rounded-2xl
+                    bg-blue-600
+                    flex items-center justify-center
+                    font-extrabold text-xl">
+
           ت
+
         </div>
 
         <div>
+
           <b>توريدك</b>
+
           <div class="text-xs text-slate-500">
             Tawreedak
           </div>
+
         </div>
 
       </div>
@@ -628,19 +1012,21 @@ function shell() {
 
       <nav class="p-3 space-y-1">
 
-        ${nav.map(n => `
+        ${nav.map(n=>`
 
           <button
             data-nav="${n[0]}"
-            class="w-full flex gap-3 items-center
-                   px-4 py-3 rounded-xl text-sm
+            class="w-full flex gap-3
+                   items-center px-4 py-3
+                   rounded-xl text-sm
                    ${
-                     S.view === n[0]
-                       ? "bg-blue-600"
-                       : "text-slate-300 hover:bg-white/5"
+                     S.view===n[0]
+                     ?"bg-blue-600"
+                     :"text-slate-300 hover:bg-white/5"
                    }">
 
             ${icon(n[2])}
+
             ${n[1]}
 
           </button>
@@ -652,18 +1038,19 @@ function shell() {
 
       <div class="mt-auto p-4">
 
-        <div
-          class="bg-white/5 rounded-xl p-3 text-sm">
+        <div class="bg-white/5
+                    rounded-xl p-3 text-sm">
 
           <div class="text-slate-400 text-xs">
             الشركة
           </div>
 
           <b>
-            ${esc(S.company?.name || "")}
+            ${esc(S.company?.name||"")}
           </b>
 
-          <div class="text-emerald-400 text-xs mt-1">
+          <div class="text-emerald-400
+                      text-xs mt-1">
             الخطة: Free
           </div>
 
@@ -673,7 +1060,8 @@ function shell() {
         <button
           id="logout"
           class="w-full mt-3
-                 bg-red-500/10 text-red-300
+                 bg-red-500/10
+                 text-red-300
                  rounded-xl py-3">
 
           ${icon("log-out")}
@@ -693,19 +1081,26 @@ function shell() {
                bg-white/90 backdrop-blur
                border-b p-4">
 
-        <div class="flex justify-between items-center">
+        <div class="flex
+                    justify-between
+                    items-center">
 
           <div>
 
             <h1 class="font-extrabold text-lg">
+
               ${
-                nav.find(x => x[0] === S.view)?.[1]
-                || "توريدك"
+                nav.find(
+                  x=>x[0]===S.view
+                )[1]
               }
+
             </h1>
 
             <div class="text-xs text-slate-400">
-              ${esc(S.profile?.name || "")}
+
+              ${esc(S.profile?.name||"")}
+
             </div>
 
           </div>
@@ -722,21 +1117,21 @@ function shell() {
         </div>
 
 
-        <div
-          class="lg:hidden flex gap-2
-                 overflow-x-auto mt-3">
+        <div class="lg:hidden
+                    flex gap-2 overflow-x-auto mt-3">
 
-          ${nav.map(n => `
+          ${nav.map(n=>`
 
             <button
               data-nav="${n[0]}"
               class="whitespace-nowrap
-                     px-3 py-2 rounded-xl
-                     text-xs font-bold
+                     px-3 py-2
+                     rounded-xl text-xs
+                     font-bold
                      ${
-                       S.view === n[0]
-                         ? "bg-blue-600 text-white"
-                         : "bg-slate-100"
+                       S.view===n[0]
+                       ?"bg-blue-600 text-white"
+                       :"bg-slate-100"
                      }">
 
               ${n[1]}
@@ -752,12 +1147,14 @@ function shell() {
 
       <section
         id="content"
-        class="p-4 md:p-7 max-w-7xl mx-auto">
+        class="p-4 md:p-7
+               max-w-7xl mx-auto">
       </section>
 
     </main>
 
   </div>
+
   `;
 }
 
@@ -766,11 +1163,11 @@ function shell() {
    DASHBOARD
 ========================================================= */
 
-function dashboard() {
+function dashboard(){
 
   const total =
     S.quotes.reduce(
-      (a, q) => a + Number(q.total || 0),
+      (a,q)=>a+Number(q.total||0),
       0
     );
 
@@ -783,11 +1180,11 @@ function dashboard() {
                 lg:grid-cols-4 gap-4">
 
       ${[
-        ["العملاء", S.customers.length, "users"],
-        ["المنتجات", S.products.length, "package"],
-        ["العروض", S.quotes.length, "file-text"],
-        ["قيمة العروض", money(total), "wallet"]
-      ].map(x => `
+        ["العملاء",S.customers.length,"users"],
+        ["المنتجات",S.products.length,"package"],
+        ["العروض",S.quotes.length,"file-text"],
+        ["قيمة العروض",money(total),"wallet"]
+      ].map(x=>`
 
         <div class="card p-5">
 
@@ -799,17 +1196,19 @@ function dashboard() {
                 ${x[0]}
               </div>
 
-              <div class="font-extrabold text-xl mt-2">
+              <div class="font-extrabold
+                          text-xl mt-2">
                 ${x[1]}
               </div>
 
             </div>
 
-            <div
-              class="w-11 h-11 rounded-2xl
-                     bg-blue-50 text-blue-600
-                     flex items-center
-                     justify-center">
+            <div class="w-11 h-11
+                        rounded-2xl
+                        bg-blue-50
+                        text-blue-600
+                        flex items-center
+                        justify-center">
 
               ${icon(x[2])}
 
@@ -838,7 +1237,9 @@ function dashboard() {
             data-nav="quotes"
             class="text-blue-600
                    text-sm font-bold">
+
             عرض الكل
+
           </button>
 
         </div>
@@ -846,45 +1247,55 @@ function dashboard() {
 
         ${
           S.quotes.length
-            ? S.quotes
-                .slice()
-                .reverse()
-                .slice(0, 7)
-                .map(q => `
+          ?
+          S.quotes
+            .slice()
+            .reverse()
+            .slice(0,7)
+            .map(q=>`
+
+              <div
+                class="flex justify-between
+                       p-3 rounded-xl
+                       bg-slate-50 mb-2">
+
+                <div>
+
+                  <b>
+                    ${esc(q.quoteNumber)}
+                  </b>
 
                   <div
-                    class="flex justify-between
-                           p-3 rounded-xl
-                           bg-slate-50 mb-2">
+                    class="text-xs text-slate-500">
 
-                    <div>
-
-                      <b>
-                        ${esc(q.quoteNumber)}
-                      </b>
-
-                      <div class="text-xs text-slate-500">
-                        ${esc(q.customerName || "-")}
-                        •
-                        ${date(q.createdAt)}
-                      </div>
-
-                    </div>
-
-                    <b>
-                      ${money(q.total)}
-                    </b>
+                    ${esc(q.customerName||"-")}
+                    •
+                    ${date(q.createdAt)}
 
                   </div>
 
-                `).join("")
-            : `
-              <div
-                class="text-center
-                       text-slate-400 py-10">
-                لا توجد عروض أسعار بعد
+                </div>
+
+                <b>
+                  ${money(q.total)}
+                </b>
+
               </div>
-            `
+
+            `).join("")
+
+          :
+
+          `
+            <div
+              class="text-center
+                     text-slate-400
+                     py-10">
+
+              لا توجد عروض أسعار بعد
+
+            </div>
+          `
         }
 
       </div>
@@ -897,29 +1308,41 @@ function dashboard() {
         </h2>
 
         ${
-          S.followups.slice(0, 6).map(f => `
+          S.followups
+            .slice(0,6)
+            .map(f=>`
 
-            <div
-              class="mt-3 p-3 border rounded-xl">
+              <div
+                class="mt-3 p-3 border
+                       rounded-xl">
 
-              <b class="text-sm">
-                ${esc(f.title)}
-              </b>
+                <b class="text-sm">
+                  ${esc(f.title)}
+                </b>
 
-              <div class="text-xs text-slate-500">
-                ${date(f.dueDate)}
+                <div
+                  class="text-xs
+                         text-slate-500">
+
+                  ${date(f.dueDate)}
+
+                </div>
+
               </div>
 
-            </div>
+            `).join("")
 
-          `).join("")
           ||
+
           `
-          <div
-            class="text-center
-                   text-slate-400 py-10 text-sm">
-            لا توجد متابعات
-          </div>
+            <div
+              class="text-center
+                     text-slate-400
+                     py-10 text-sm">
+
+              لا توجد متابعات
+
+            </div>
           `
         }
 
@@ -928,6 +1351,7 @@ function dashboard() {
     </div>
 
   </div>
+
   `;
 }
 
@@ -936,106 +1360,123 @@ function dashboard() {
    TABLES
 ========================================================= */
 
-function rows(type) {
+function rows(type){
 
-  const customer =
-    type === "customers";
+  const c = type==="customers";
 
-  const arr =
-    customer
-      ? S.customers
-      : S.products;
+  const a = c
+    ? S.customers
+    : S.products;
 
 
-  if (!arr.length) {
+  return a.length
 
-    return `
-      <tr>
-        <td
-          colspan="4"
-          class="p-12 text-center
-                 text-slate-400">
-          لا توجد بيانات
+    ?
+
+    a.map(x=>`
+
+      <tr class="border-t">
+
+        <td class="p-4 font-bold">
+
+          ${esc(
+            x.name ||
+            x.productName
+          )}
+
         </td>
-      </tr>
-    `;
-  }
 
 
-  return arr.map(x => `
+        ${
+          c
 
-    <tr class="border-t">
+          ?
 
-      <td class="p-4 font-bold">
-        ${esc(x.name || x.productName)}
-      </td>
-
-      ${
-        customer
-          ? `
+          `
             <td>
-              ${esc(x.phone || "-")}
+              ${esc(x.phone||"-")}
             </td>
 
             <td>
-              ${esc(x.email || "-")}
+              ${esc(x.email||"-")}
             </td>
           `
-          : `
+
+          :
+
+          `
             <td>
-              ${esc(x.unit || "قطعة")}
+              ${esc(x.unit||"قطعة")}
             </td>
 
             <td>
               ${money(x.price)}
             </td>
           `
-      }
+        }
 
-      <td>
 
-        <button
-          data-del="${x.id}"
-          data-col="${customer ? "customers" : "products"}"
-          class="text-red-500 p-2">
+        <td>
 
-          ${icon("trash-2")}
+          <button
+            data-del="${x.id}"
+            data-col="${c?"customers":"products"}"
+            class="text-red-500 p-2">
 
-        </button>
+            ${icon("trash-2")}
 
-      </td>
+          </button>
 
-    </tr>
+        </td>
 
-  `).join("");
+      </tr>
+
+    `).join("")
+
+    :
+
+    `
+      <tr>
+
+        <td
+          colspan="4"
+          class="p-12
+                 text-center
+                 text-slate-400">
+
+          لا توجد بيانات
+
+        </td>
+
+      </tr>
+    `;
 }
 
 
-function table(type) {
+function table(type){
 
-  const customer =
-    type === "customers";
+  const c = type==="customers";
 
 
   return `
 
   <div class="space-y-5">
 
-    <div
-      class="flex justify-between
-             items-center">
+    <div class="flex
+                justify-between
+                items-center">
 
       <div>
 
         <h2 class="text-xl font-extrabold">
-          ${customer ? "العملاء" : "المنتجات"}
+          ${c?"العملاء":"المنتجات"}
         </h2>
 
         <p class="text-sm text-slate-500">
           ${
-            customer
-              ? "إدارة قاعدة العملاء"
-              : "إدارة المنتجات والأسعار"
+            c
+            ?"إدارة قاعدة العملاء"
+            :"إدارة المنتجات والأسعار"
           }
         </p>
 
@@ -1044,11 +1485,15 @@ function table(type) {
 
       <button
         id="add"
-        class="bg-blue-600 text-white
-               px-4 py-3 rounded-xl
-               font-bold flex gap-2">
+        class="bg-blue-600
+               text-white
+               px-4 py-3
+               rounded-xl
+               font-bold
+               flex gap-2">
 
         ${icon("plus")}
+
         إضافة
 
       </button>
@@ -1062,26 +1507,45 @@ function table(type) {
 
         <table class="w-full text-sm">
 
-          <thead class="bg-slate-50">
+          <thead
+            class="bg-slate-50">
 
             <tr>
 
               ${
-                customer
-                  ? `
-                    <th class="p-4 text-right">
-                      الاسم
-                    </th>
-                    <th>الهاتف</th>
-                    <th>البريد</th>
-                  `
-                  : `
-                    <th class="p-4 text-right">
-                      المنتج
-                    </th>
-                    <th>الوحدة</th>
-                    <th>السعر</th>
-                  `
+                c
+
+                ?
+
+                `
+                  <th class="p-4 text-right">
+                    الاسم
+                  </th>
+
+                  <th>
+                    الهاتف
+                  </th>
+
+                  <th>
+                    البريد
+                  </th>
+                `
+
+                :
+
+                `
+                  <th class="p-4 text-right">
+                    المنتج
+                  </th>
+
+                  <th>
+                    الوحدة
+                  </th>
+
+                  <th>
+                    السعر
+                  </th>
+                `
               }
 
               <th>
@@ -1092,8 +1556,11 @@ function table(type) {
 
           </thead>
 
+
           <tbody>
+
             ${rows(type)}
+
           </tbody>
 
         </table>
@@ -1112,15 +1579,15 @@ function table(type) {
    QUOTES
 ========================================================= */
 
-function quotes() {
+function quotes(){
 
   return `
 
   <div class="space-y-5">
 
-    <div
-      class="flex justify-between
-             items-center">
+    <div class="flex
+                justify-between
+                items-center">
 
       <div>
 
@@ -1137,8 +1604,10 @@ function quotes() {
 
       <button
         id="newq"
-        class="bg-blue-600 text-white
-               px-4 py-3 rounded-xl
+        class="bg-blue-600
+               text-white
+               px-4 py-3
+               rounded-xl
                font-bold">
 
         ${icon("plus")}
@@ -1157,11 +1626,25 @@ function quotes() {
 
           <tr>
 
-            <th class="p-4">الرقم</th>
-            <th>العميل</th>
-            <th>الإجمالي</th>
-            <th>التاريخ</th>
-            <th>إجراء</th>
+            <th class="p-4">
+              الرقم
+            </th>
+
+            <th>
+              العميل
+            </th>
+
+            <th>
+              الإجمالي
+            </th>
+
+            <th>
+              التاريخ
+            </th>
+
+            <th>
+              إجراء
+            </th>
 
           </tr>
 
@@ -1172,58 +1655,73 @@ function quotes() {
 
           ${
             S.quotes.length
-              ? S.quotes
-                  .slice()
-                  .reverse()
-                  .map(q => `
 
-                    <tr class="border-t">
+            ?
 
-                      <td class="p-4 font-bold">
-                        ${esc(q.quoteNumber)}
-                      </td>
+            S.quotes
+              .slice()
+              .reverse()
+              .map(q=>`
 
-                      <td>
-                        ${esc(q.customerName)}
-                      </td>
+                <tr class="border-t">
 
-                      <td>
-                        ${money(q.total)}
-                      </td>
-
-                      <td>
-                        ${date(q.createdAt)}
-                      </td>
-
-                      <td>
-
-                        <button
-                          data-wa="${q.id}"
-                          class="text-emerald-600 p-2">
-                          ${icon("message-circle")}
-                        </button>
-
-                        <button
-                          data-pr="${q.id}"
-                          class="text-blue-600 p-2">
-                          ${icon("printer")}
-                        </button>
-
-                      </td>
-
-                    </tr>
-
-                  `).join("")
-              : `
-                <tr>
-                  <td
-                    colspan="5"
-                    class="p-12 text-center
-                           text-slate-400">
-                    لا توجد عروض
+                  <td class="p-4 font-bold">
+                    ${esc(q.quoteNumber)}
                   </td>
+
+                  <td>
+                    ${esc(q.customerName)}
+                  </td>
+
+                  <td>
+                    ${money(q.total)}
+                  </td>
+
+                  <td>
+                    ${date(q.createdAt)}
+                  </td>
+
+                  <td>
+
+                    <button
+                      data-wa="${q.id}"
+                      class="text-emerald-600 p-2">
+
+                      ${icon("message-circle")}
+
+                    </button>
+
+                    <button
+                      data-pr="${q.id}"
+                      class="text-blue-600 p-2">
+
+                      ${icon("printer")}
+
+                    </button>
+
+                  </td>
+
                 </tr>
-              `
+
+              `).join("")
+
+            :
+
+            `
+              <tr>
+
+                <td
+                  colspan="5"
+                  class="p-12
+                         text-center
+                         text-slate-400">
+
+                  لا توجد عروض
+
+                </td>
+
+              </tr>
+            `
           }
 
         </tbody>
@@ -1239,18 +1737,18 @@ function quotes() {
 
 
 /* =========================================================
-   FOLLOW UPS
+   FOLLOWUPS
 ========================================================= */
 
-function followups() {
+function followups(){
 
   return `
 
   <div class="space-y-5">
 
-    <div
-      class="flex justify-between
-             items-center">
+    <div class="flex
+                justify-between
+                items-center">
 
       <div>
 
@@ -1267,8 +1765,10 @@ function followups() {
 
       <button
         id="addf"
-        class="bg-blue-600 text-white
-               px-4 py-3 rounded-xl
+        class="bg-blue-600
+               text-white
+               px-4 py-3
+               rounded-xl
                font-bold">
 
         ${icon("plus")}
@@ -1284,7 +1784,7 @@ function followups() {
              lg:grid-cols-3 gap-4">
 
       ${
-        S.followups.map(f => `
+        S.followups.map(f=>`
 
           <div class="card p-5">
 
@@ -1309,20 +1809,28 @@ function followups() {
             </div>
 
             <p
-              class="text-sm text-slate-500 mt-3">
-              ${esc(f.notes || "")}
+              class="text-sm
+                     text-slate-500 mt-3">
+
+              ${esc(f.notes||"")}
+
             </p>
 
           </div>
 
         `).join("")
+
         ||
+
         `
           <div
-            class="card p-12 text-center
+            class="card p-12
+                   text-center
                    text-slate-400
                    md:col-span-3">
+
             لا توجد متابعات
+
           </div>
         `
       }
@@ -1336,12 +1844,12 @@ function followups() {
 
 
 /* =========================================================
-   MAIN RENDER
+   RENDER
 ========================================================= */
 
-function render() {
+function render(){
 
-  if (!S.user) {
+  if(!S.user){
 
     renderAuth();
 
@@ -1349,21 +1857,61 @@ function render() {
   }
 
 
-  $("app").innerHTML = shell();
+  if(!S.profile){
 
-  $("content").innerHTML =
-    S.view === "dashboard"
-      ? dashboard()
-      : S.view === "customers"
-      ? table("customers")
-      : S.view === "products"
-      ? table("products")
-      : S.view === "quotes"
-      ? quotes()
-      : followups();
+    $("#app").innerHTML = `
+
+      <div class="min-h-screen
+                  flex items-center
+                  justify-center">
+
+        <div class="text-center">
+
+          <div
+            class="w-12 h-12
+                   border-4
+                   border-blue-600
+                   border-t-transparent
+                   rounded-full
+                   animate-spin
+                   mx-auto">
+          </div>
+
+          <p class="mt-4
+                    text-slate-500">
+
+            جارٍ تحميل الحساب...
+
+          </p>
+
+        </div>
+
+      </div>
+
+    `;
+
+    return;
+  }
+
+
+  $("#app").innerHTML =
+    shell();
+
+
+  $("#content").innerHTML =
+    S.view==="dashboard"
+    ? dashboard()
+    : S.view==="customers"
+    ? table("customers")
+    : S.view==="products"
+    ? table("products")
+    : S.view==="quotes"
+    ? quotes()
+    : followups();
 
 
   bind();
+
   icons();
 }
 
@@ -1372,28 +1920,31 @@ function render() {
    MODAL
 ========================================================= */
 
-function modal(title, body) {
+function modal(title,body){
 
   const d =
     document.createElement("div");
 
   d.className =
-    "fixed inset-0 z-50 bg-slate-950/50 " +
-    "flex items-center justify-center p-4";
+    "fixed inset-0 z-50 bg-slate-950/50 flex items-center justify-center p-4";
 
 
   d.innerHTML = `
 
     <div
-      class="bg-white w-full max-w-lg
+      class="bg-white w-full
+             max-w-lg
              max-h-[92vh]
-             overflow-auto rounded-2xl">
+             overflow-auto
+             rounded-2xl">
 
       <div
         class="p-5 border-b
                flex justify-between">
 
-        <b>${title}</b>
+        <b>
+          ${title}
+        </b>
 
         <button class="close">
           ${icon("x")}
@@ -1402,7 +1953,9 @@ function modal(title, body) {
       </div>
 
       <div class="p-5">
+
         ${body}
+
       </div>
 
     </div>
@@ -1410,11 +1963,11 @@ function modal(title, body) {
   `;
 
 
-  document.body.appendChild(d);
+  document.body.append(d);
 
 
   d.querySelector(".close").onclick =
-    () => d.remove();
+    ()=>d.remove();
 
 
   icons();
@@ -1427,7 +1980,7 @@ function modal(title, body) {
    CUSTOMER / PRODUCT MODAL
 ========================================================= */
 
-function dataModal(customer) {
+function dataModal(customer){
 
   const d = modal(
 
@@ -1437,122 +1990,133 @@ function dataModal(customer) {
 
     customer
 
-      ? `
-        <form id="f" class="space-y-3">
+    ?
 
-          <input
-            id="n"
-            required
-            class="w-full border rounded-xl p-3"
-            placeholder="اسم العميل">
+    `
+      <form id="f" class="space-y-3">
 
-          <input
-            id="p"
-            class="w-full border rounded-xl p-3"
-            placeholder="رقم الهاتف">
+        <input
+          id="n"
+          required
+          class="w-full border rounded-xl p-3"
+          placeholder="اسم العميل">
 
-          <input
-            id="e"
-            class="w-full border rounded-xl p-3"
-            placeholder="البريد الإلكتروني">
+        <input
+          id="p"
+          class="w-full border rounded-xl p-3"
+          placeholder="رقم الهاتف">
 
-          <textarea
-            id="no"
-            class="w-full border rounded-xl p-3"
-            placeholder="ملاحظات">
-          </textarea>
+        <input
+          id="e"
+          class="w-full border rounded-xl p-3"
+          placeholder="البريد الإلكتروني">
 
-          <button
-            class="w-full bg-blue-600
-                   text-white p-3
-                   rounded-xl font-bold">
-            حفظ
-          </button>
+        <textarea
+          id="no"
+          class="w-full border rounded-xl p-3"
+          placeholder="ملاحظات">
+        </textarea>
 
-        </form>
-      `
+        <button
+          class="w-full bg-blue-600
+                 text-white p-3
+                 rounded-xl font-bold">
 
-      : `
+          حفظ
 
-        <form id="f" class="space-y-3">
+        </button>
 
-          <input
-            id="n"
-            required
-            class="w-full border rounded-xl p-3"
-            placeholder="اسم المنتج">
+      </form>
+    `
 
-          <input
-            id="p"
-            type="number"
-            min="0"
-            required
-            class="w-full border rounded-xl p-3"
-            placeholder="السعر">
+    :
 
-          <input
-            id="u"
-            class="w-full border rounded-xl p-3"
-            placeholder="الوحدة">
+    `
+      <form id="f" class="space-y-3">
 
-          <textarea
-            id="no"
-            class="w-full border rounded-xl p-3"
-            placeholder="ملاحظات">
-          </textarea>
+        <input
+          id="n"
+          required
+          class="w-full border rounded-xl p-3"
+          placeholder="اسم المنتج">
 
-          <button
-            class="w-full bg-blue-600
-                   text-white p-3
-                   rounded-xl font-bold">
-            حفظ
-          </button>
+        <input
+          id="p"
+          type="number"
+          min="0"
+          required
+          class="w-full border rounded-xl p-3"
+          placeholder="السعر">
 
-        </form>
+        <input
+          id="u"
+          class="w-full border rounded-xl p-3"
+          placeholder="الوحدة">
 
-      `
+        <textarea
+          id="no"
+          class="w-full border rounded-xl p-3"
+          placeholder="ملاحظات">
+        </textarea>
+
+        <button
+          class="w-full bg-blue-600
+                 text-white p-3
+                 rounded-xl font-bold">
+
+          حفظ
+
+        </button>
+
+      </form>
+    `
   );
 
 
   d.querySelector("#f").onsubmit =
-    async e => {
+    async e=>{
 
       e.preventDefault();
 
-      try {
+      try{
 
         const data = customer
 
-          ? {
-              name: $("n").value,
-              phone: $("p").value,
-              email: $("e").value,
-              notes: $("no").value
-            }
+        ?
 
-          : {
-              name: $("n").value,
-              productName: $("n").value,
-              price: Number($("p").value),
-              unit: $("u").value || "قطعة",
-              notes: $("no").value
-            };
+        {
+          name:$("#n").value,
+          phone:$("#p").value,
+          email:$("#e").value,
+          notes:$("#no").value
+        }
+
+        :
+
+        {
+          name:$("#n").value,
+          productName:$("#n").value,
+          price:Number($("#p").value),
+          unit:$("#u").value || "قطعة",
+          notes:$("#no").value
+        };
 
 
         await addDoc(
+
           collection(
             db,
             customer
               ? "customers"
               : "products"
           ),
+
           {
             ...data,
-            companyId:
-              S.profile.companyId,
-            createdAt:
-              serverTimestamp()
+            companyId:S.profile.companyId,
+            createdAt:serverTimestamp()
           }
+
         );
 
 
@@ -1562,15 +2126,13 @@ function dataModal(customer) {
 
         toast("تم الحفظ");
 
-      } catch (x) {
-
-        console.error(x);
+      }catch(x){
 
         toast(
-          x.message ||
-          "حدث خطأ أثناء الحفظ",
+          authError(x),
           true
         );
+
       }
 
     };
@@ -1581,114 +2143,123 @@ function dataModal(customer) {
    QUOTE MODAL
 ========================================================= */
 
-function quoteModal() {
+function quoteModal(){
 
   const d = modal(
 
     "إنشاء عرض سعر",
 
     `
+      <form id="qf" class="space-y-4">
 
-    <form id="qf" class="space-y-4">
+        <select
+          id="qc"
+          required
+          class="w-full border rounded-xl p-3">
 
-      <select
-        id="qc"
-        required
-        class="w-full border rounded-xl p-3">
-
-        <option value="">
-          اختر العميل
-        </option>
-
-        ${S.customers.map(c => `
-
-          <option value="${c.id}">
-            ${esc(c.name)}
+          <option value="">
+            اختر العميل
           </option>
 
-        `).join("")}
+          ${S.customers.map(c=>`
 
-      </select>
+            <option value="${c.id}">
+              ${esc(c.name)}
+            </option>
 
+          `).join("")}
 
-      <div
-        class="border rounded-2xl p-4
-               bg-slate-50">
+        </select>
+
 
         <div
-          class="flex justify-between mb-3">
+          class="border rounded-2xl
+                 p-4 bg-slate-50">
 
-          <b>بنود العرض</b>
+          <div
+            class="flex justify-between mb-3">
 
-          <button
-            type="button"
-            id="additem"
-            class="text-blue-600 font-bold">
-            + إضافة بند
-          </button>
+            <b>
+              بنود العرض
+            </b>
+
+            <button
+              type="button"
+              id="additem"
+              class="text-blue-600 font-bold">
+
+              + إضافة بند
+
+            </button>
+
+          </div>
+
+
+          <div
+            id="items"
+            class="space-y-2">
+          </div>
 
         </div>
 
 
         <div
-          id="items"
-          class="space-y-2">
+          class="grid grid-cols-2 gap-2">
+
+          <input
+            id="disc"
+            type="number"
+            min="0"
+            value="0"
+            class="border rounded-xl p-3"
+            placeholder="خصم">
+
+          <input
+            id="tax"
+            type="number"
+            min="0"
+            value="0"
+            class="border rounded-xl p-3"
+            placeholder="ضريبة %">
+
         </div>
 
-      </div>
+
+        <textarea
+          id="qn"
+          class="w-full border rounded-xl p-3"
+          placeholder="ملاحظات وشروط">
+        </textarea>
 
 
-      <div class="grid grid-cols-2 gap-2">
+        <div
+          class="p-4 bg-blue-50
+                 rounded-xl
+                 flex justify-between
+                 font-extrabold">
 
-        <input
-          id="disc"
-          type="number"
-          min="0"
-          value="0"
-          class="border rounded-xl p-3"
-          placeholder="خصم">
+          <span>
+            الإجمالي
+          </span>
 
-        <input
-          id="tax"
-          type="number"
-          min="0"
-          value="0"
-          class="border rounded-xl p-3"
-          placeholder="ضريبة %">
+          <span id="tot">
+            0.00 ج.م
+          </span>
 
-      </div>
+        </div>
 
 
-      <textarea
-        id="qn"
-        class="w-full border rounded-xl p-3"
-        placeholder="ملاحظات وشروط">
-      </textarea>
+        <button
+          class="w-full bg-blue-600
+                 text-white p-3
+                 rounded-xl
+                 font-extrabold">
 
+          إنشاء العرض
 
-      <div
-        class="p-4 bg-blue-50 rounded-xl
-               flex justify-between
-               font-extrabold">
+        </button>
 
-        <span>الإجمالي</span>
-
-        <span id="tot">
-          0.00 ج.م
-        </span>
-
-      </div>
-
-
-      <button
-        class="w-full bg-blue-600
-               text-white p-3
-               rounded-xl font-extrabold">
-        إنشاء العرض
-      </button>
-
-    </form>
-
+      </form>
     `
   );
 
@@ -1697,7 +2268,7 @@ function quoteModal() {
     d.querySelector("#items");
 
 
-  function add() {
+  function add(){
 
     const r =
       document.createElement("div");
@@ -1716,13 +2287,13 @@ function quoteModal() {
           اختر المنتج
         </option>
 
-        ${S.products.map(p => `
+        ${S.products.map(p=>`
 
           <option
             value="${p.id}"
-            data-price="${Number(p.price || 0)}">
+            data-price="${Number(p.price||0)}">
 
-            ${esc(p.name || p.productName)}
+            ${esc(p.name||p.productName)}
             —
             ${money(p.price)}
 
@@ -1749,23 +2320,25 @@ function quoteModal() {
         ${icon("trash-2")}
 
       </button>
+
     `;
 
 
-    box.appendChild(r);
+    box.append(r);
 
 
-    r.querySelector(".pr").onchange =
-      calc;
+    r.querySelector(".pr")
+      .onchange = calc;
 
-    r.querySelector(".qt").oninput =
-      calc;
+    r.querySelector(".qt")
+      .oninput = calc;
 
 
-    r.querySelector(".rm").onclick =
-      () => {
+    r.querySelector(".rm")
+      .onclick = ()=>{
 
         r.remove();
+
         calc();
 
       };
@@ -1775,13 +2348,14 @@ function quoteModal() {
   }
 
 
-  function calc() {
+  function calc(){
 
     let sub = 0;
 
 
-    box.querySelectorAll(".grid")
-      .forEach(r => {
+    box
+      .querySelectorAll(".grid")
+      .forEach(r=>{
 
         const s =
           r.querySelector(".pr");
@@ -1791,7 +2365,10 @@ function quoteModal() {
 
 
         sub +=
-          Number(o?.dataset.price || 0) *
+          Number(
+            o?.dataset.price || 0
+          )
+          *
           Number(
             r.querySelector(".qt").value || 0
           );
@@ -1800,117 +2377,124 @@ function quoteModal() {
 
 
     const dis =
-      Number($("disc").value || 0);
+      Number($("#disc").value || 0);
 
     const tax =
-      Number($("tax").value || 0);
-
+      Number($("#tax").value || 0);
 
     const net =
-      Math.max(0, sub - dis);
+      Math.max(0,sub-dis);
 
 
-    $("tot").textContent =
+    $("#tot").textContent =
       money(
-        net + net * tax / 100
+        net + net*tax/100
       );
   }
 
 
-  d.querySelector("#additem").onclick =
-    add;
+  d.querySelector("#additem")
+    .onclick = add;
 
-  d.querySelector("#disc").oninput =
-    calc;
+  d.querySelector("#disc")
+    .oninput = calc;
 
-  d.querySelector("#tax").oninput =
-    calc;
+  d.querySelector("#tax")
+    .oninput = calc;
 
 
   add();
 
 
   d.querySelector("#qf").onsubmit =
-    async e => {
+    async e=>{
 
       e.preventDefault();
 
 
       const customer =
         S.customers.find(
-          c => c.id === $("qc").value
+          c=>c.id===$("#qc").value
         );
 
 
-      const items =
-        [...box.querySelectorAll(".grid")]
-          .map(r => {
+      const items = [
 
-            const s =
-              r.querySelector(".pr");
+        ...box.querySelectorAll(".grid")
 
-            const o =
-              s.options[s.selectedIndex];
+      ]
 
+      .map(r=>{
 
-            return {
-              productId: s.value,
-              name:
-                (o?.textContent || "")
-                  .split(" — ")[0]
-                  .trim(),
+        const s =
+          r.querySelector(".pr");
 
-              unitPrice:
-                Number(
-                  o?.dataset.price || 0
-                ),
-
-              quantity:
-                Number(
-                  r.querySelector(".qt")
-                    .value || 0
-                )
-            };
-
-          })
-          .filter(x => x.productId);
+        const o =
+          s.options[s.selectedIndex];
 
 
-      if (!items.length) {
+        return {
 
-        toast(
+          productId:s.value,
+
+          name:
+            (o?.textContent||"")
+            .split(" — ")[0],
+
+          unitPrice:
+            Number(
+              o?.dataset.price||0
+            ),
+
+          quantity:
+            Number(
+              r.querySelector(".qt").value||0
+            )
+
+        };
+
+      })
+
+      .filter(x=>x.productId);
+
+
+      if(!items.length){
+
+        return toast(
           "أضف بندًا واحدًا على الأقل",
           true
         );
 
-        return;
       }
 
 
       const sub =
         items.reduce(
-          (a, x) =>
-            a + x.unitPrice * x.quantity,
+          (a,x)=>
+            a+x.unitPrice*x.quantity,
           0
         );
 
 
       const dis =
-        Number($("disc").value || 0);
+        Number(
+          $("#disc").value||0
+        );
 
       const tax =
-        Number($("tax").value || 0);
+        Number(
+          $("#tax").value||0
+        );
 
 
       const net =
-        Math.max(0, sub - dis);
-
+        Math.max(0,sub-dis);
 
       const total =
-        net + net * tax / 100;
+        net + net*tax/100;
 
 
-      try {
+      try{
 
         const companyId =
           S.profile.companyId;
@@ -1931,7 +2515,7 @@ function quoteModal() {
         const num =
           await runTransaction(
             db,
-            async tx => {
+            async tx=>{
 
               const cd =
                 await tx.get(counter);
@@ -1939,62 +2523,79 @@ function quoteModal() {
 
               const next =
                 cd.exists()
-                  ? Number(
-                      cd.data()
-                        .lastQuoteNumber || 0
-                    ) + 1
-                  : 1;
+
+                ?
+
+                Number(
+                  cd.data()
+                   .lastQuoteNumber||0
+                )+1
+
+                :
+
+                1;
 
 
               tx.set(
+
                 counter,
+
                 {
-                  lastQuoteNumber:
-                    next
+                  lastQuoteNumber:next
                 },
+
                 {
-                  merge: true
+                  merge:true
                 }
+
               );
 
 
               const qr =
                 doc(
-                  collection(
-                    db,
-                    "quotes"
-                  )
+                  collection(db,"quotes")
                 );
 
 
               const n =
-                `QT-${year}-${String(next)
-                  .padStart(4, "0")}`;
+                `QT-${year}-${String(next).padStart(4,"0")}`;
 
 
               tx.set(
+
                 qr,
+
                 {
                   companyId,
+
                   customerId:
-                    customer?.id || "",
+                    customer?.id||"",
+
                   customerName:
-                    customer?.name || "",
-                  subtotal: sub,
-                  discount: dis,
+                    customer?.name||"",
+
+                  subtotal:sub,
+
+                  discount:dis,
+
                   tax,
+
                   total,
-                  notes:
-                    $("qn").value,
-                  status: "draft",
-                  quoteNumber: n,
+
+                  notes:$("#qn").value,
+
+                  status:"draft",
+
+                  quoteNumber:n,
+
                   createdAt:
                     serverTimestamp()
                 }
+
               );
 
 
-              for (const x of items) {
+              for(const x of items){
 
                 const ir =
                   doc(
@@ -2006,27 +2607,33 @@ function quoteModal() {
 
 
                 tx.set(
+
                   ir,
+
                   {
                     companyId,
-                    quoteId: qr.id,
-                    productId:
-                      x.productId,
-                    nameSnapshot:
-                      x.name,
-                    unitPrice:
-                      x.unitPrice,
-                    quantity:
-                      x.quantity,
+
+                    quoteId:qr.id,
+
+                    productId:x.productId,
+
+                    nameSnapshot:x.name,
+
+                    unitPrice:x.unitPrice,
+
+                    quantity:x.quantity,
+
                     total:
-                      x.unitPrice *
-                      x.quantity
+                      x.unitPrice*x.quantity
                   }
+
                 );
+
               }
 
 
               return n;
+
             }
           );
 
@@ -2036,20 +2643,19 @@ function quoteModal() {
         await load();
 
         toast(
-          "تم إنشاء العرض " + num
+          "تم إنشاء العرض "+num
         );
 
 
-      } catch (x) {
-
-        console.error(x);
+      }catch(x){
 
         toast(
-          x.message ||
-          "حدث خطأ أثناء إنشاء العرض",
+          authError(x),
           true
         );
+
       }
+
     };
 }
 
@@ -2058,82 +2664,81 @@ function quoteModal() {
    FOLLOWUP MODAL
 ========================================================= */
 
-function followModal() {
+function followModal(){
 
   const d = modal(
 
     "إضافة متابعة",
 
     `
+      <form id="ff" class="space-y-3">
 
-    <form id="ff" class="space-y-3">
+        <input
+          id="ft"
+          required
+          class="w-full border rounded-xl p-3"
+          placeholder="عنوان المتابعة">
 
-      <input
-        id="ft"
-        required
-        class="w-full border rounded-xl p-3"
-        placeholder="عنوان المتابعة">
+        <input
+          id="fd"
+          required
+          type="date"
+          class="w-full border rounded-xl p-3">
 
+        <textarea
+          id="fn"
+          class="w-full border rounded-xl p-3"
+          placeholder="ملاحظات">
+        </textarea>
 
-      <input
-        id="fd"
-        required
-        type="date"
-        class="w-full border rounded-xl p-3">
+        <button
+          class="w-full bg-blue-600
+                 text-white p-3
+                 rounded-xl font-bold">
 
+          حفظ
 
-      <textarea
-        id="fn"
-        class="w-full border rounded-xl p-3"
-        placeholder="ملاحظات">
-      </textarea>
+        </button>
 
-
-      <button
-        class="w-full bg-blue-600
-               text-white p-3
-               rounded-xl font-bold">
-        حفظ
-      </button>
-
-    </form>
-
+      </form>
     `
   );
 
 
   d.querySelector("#ff").onsubmit =
-    async e => {
+    async e=>{
 
       e.preventDefault();
 
 
-      try {
+      try{
 
         await addDoc(
+
           collection(
             db,
             "followups"
           ),
+
           {
             companyId:
               S.profile.companyId,
 
             title:
-              $("ft").value,
+              $("#ft").value,
 
             dueDate:
-              $("fd").value,
+              $("#fd").value,
 
             notes:
-              $("fn").value,
+              $("#fn").value,
 
-            status:
-              "pending",
+            status:"pending",
 
             createdAt:
               serverTimestamp()
           }
+
         );
 
 
@@ -2143,16 +2748,15 @@ function followModal() {
 
         toast("تمت الإضافة");
 
-      } catch (x) {
-
-        console.error(x);
+      }catch(x){
 
         toast(
-          x.message ||
-          "حدث خطأ أثناء الحفظ",
+          authError(x),
           true
         );
+
       }
+
     };
 }
 
@@ -2161,31 +2765,39 @@ function followModal() {
    WHATSAPP
 ========================================================= */
 
-async function share(id) {
+async function share(id){
 
   const q =
     S.quotes.find(
-      x => x.id === id
+      x=>x.id===id
     );
 
 
-  if (!q) {
-    toast("العرض غير موجود", true);
-    return;
-  }
-
-
-  const text =
-    `عرض سعر من ${S.company?.name || "توريدك"}
-رقم العرض: ${q.quoteNumber}
-العميل: ${q.customerName}
-الإجمالي: ${money(q.total)}`;
-
-
   window.open(
-    "https://wa.me/?text=" +
-    encodeURIComponent(text),
+
+    "https://wa.me/?text="+
+    encodeURIComponent(
+
+      `عرض سعر من ${
+        S.company?.name||"توريدك"
+      }\n`+
+
+      `رقم العرض: ${
+        q?.quoteNumber
+      }\n`+
+
+      `العميل: ${
+        q?.customerName
+      }\n`+
+
+      `الإجمالي: ${
+        money(q?.total)
+      }`
+
+    ),
+
     "_blank"
+
   );
 }
 
@@ -2194,207 +2806,188 @@ async function share(id) {
    PRINT QUOTE
 ========================================================= */
 
-async function printQ(id) {
+async function printQ(id){
 
-  try {
-
-    const q =
-      S.quotes.find(
-        x => x.id === id
-      );
-
-
-    if (!q) {
-      toast("العرض غير موجود", true);
-      return;
-    }
-
-
-    const s =
-      await getDocs(
-        query(
-          collection(
-            db,
-            "quote_items"
-          ),
-          where(
-            "quoteId",
-            "==",
-            id
-          )
-        )
-      );
-
-
-    const rows =
-      s.docs
-        .map(x => x.data())
-        .map(i => `
-
-          <tr>
-
-            <td>
-              ${esc(i.nameSnapshot)}
-            </td>
-
-            <td>
-              ${money(i.unitPrice)}
-            </td>
-
-            <td>
-              ${i.quantity}
-            </td>
-
-            <td>
-              ${money(i.total)}
-            </td>
-
-          </tr>
-
-        `)
-        .join("");
-
-
-    const w =
-      window.open(
-        "",
-        "_blank"
-      );
-
-
-    if (!w) {
-
-      toast(
-        "المتصفح منع نافذة الطباعة",
-        true
-      );
-
-      return;
-    }
-
-
-    w.document.write(`
-
-      <html dir="rtl">
-
-      <head>
-
-        <meta charset="utf-8">
-
-        <title>
-          ${esc(q.quoteNumber)}
-        </title>
-
-        <style>
-
-          body {
-            font-family: Arial;
-            padding: 30px;
-          }
-
-          h1 {
-            color: #2563eb;
-          }
-
-          table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 25px;
-          }
-
-          th, td {
-            border: 1px solid #ddd;
-            padding: 10px;
-            text-align: right;
-          }
-
-          th {
-            background: #f1f5f9;
-          }
-
-          .total {
-            font-size: 20px;
-            font-weight: bold;
-            margin-top: 20px;
-          }
-
-        </style>
-
-      </head>
-
-
-      <body>
-
-        <h1>
-          ${esc(
-            S.company?.name ||
-            "توريدك"
-          )}
-        </h1>
-
-
-        <p>
-          عرض سعر:
-          <b>
-            ${esc(q.quoteNumber)}
-          </b>
-        </p>
-
-
-        <p>
-          العميل:
-          ${esc(q.customerName)}
-        </p>
-
-
-        <table>
-
-          <tr>
-            <th>المنتج</th>
-            <th>السعر</th>
-            <th>الكمية</th>
-            <th>الإجمالي</th>
-          </tr>
-
-          ${rows}
-
-        </table>
-
-
-        <div class="total">
-          الإجمالي:
-          ${money(q.total)}
-        </div>
-
-
-        <p>
-          ${esc(q.notes || "")}
-        </p>
-
-
-        <script>
-          setTimeout(() => print(), 300)
-        <\/script>
-
-      </body>
-
-      </html>
-
-    `);
-
-
-    w.document.close();
-
-  } catch (e) {
-
-    console.error(e);
-
-    toast(
-      e.message ||
-      "حدث خطأ أثناء الطباعة",
-      true
+  const q =
+    S.quotes.find(
+      x=>x.id===id
     );
-  }
+
+
+  const s =
+    await getDocs(
+
+      query(
+
+        collection(
+          db,
+          "quote_items"
+        ),
+
+        where(
+          "quoteId",
+          "==",
+          id
+        )
+
+      )
+
+    );
+
+
+  const rows =
+    s.docs
+      .map(x=>x.data())
+      .map(i=>`
+
+        <tr>
+
+          <td>
+            ${esc(i.nameSnapshot)}
+          </td>
+
+          <td>
+            ${money(i.unitPrice)}
+          </td>
+
+          <td>
+            ${i.quantity}
+          </td>
+
+          <td>
+            ${money(i.total)}
+          </td>
+
+        </tr>
+
+      `)
+      .join("");
+
+
+  const w =
+    window.open(
+      "",
+      "_blank"
+    );
+
+
+  w.document.write(`
+
+    <html dir="rtl">
+
+    <head>
+
+      <meta charset="utf-8">
+
+      <title>
+        ${esc(q.quoteNumber)}
+      </title>
+
+      <style>
+
+        body{
+          font-family:Arial;
+          padding:30px
+        }
+
+        h1{
+          color:#2563eb
+        }
+
+        table{
+          width:100%;
+          border-collapse:collapse;
+          margin-top:25px
+        }
+
+        th,td{
+          border:1px solid #ddd;
+          padding:10px;
+          text-align:right
+        }
+
+        th{
+          background:#f1f5f9
+        }
+
+        .total{
+          font-size:20px;
+          font-weight:bold;
+          margin-top:20px
+        }
+
+      </style>
+
+    </head>
+
+
+    <body>
+
+      <h1>
+        ${esc(
+          S.company?.name||"توريدك"
+        )}
+      </h1>
+
+      <p>
+        عرض سعر:
+        <b>
+          ${esc(q.quoteNumber)}
+        </b>
+      </p>
+
+      <p>
+        العميل:
+        ${esc(q.customerName)}
+      </p>
+
+
+      <table>
+
+        <tr>
+
+          <th>المنتج</th>
+          <th>السعر</th>
+          <th>الكمية</th>
+          <th>الإجمالي</th>
+
+        </tr>
+
+        ${rows}
+
+      </table>
+
+
+      <div class="total">
+
+        الإجمالي:
+        ${money(q.total)}
+
+      </div>
+
+
+      <p>
+        ${esc(q.notes||"")}
+      </p>
+
+
+      <script>
+
+        setTimeout(
+          ()=>print(),
+          300
+        )
+
+      <\/script>
+
+    </body>
+
+    </html>
+
+  `);
+
+
+  w.document.close();
 }
 
 
@@ -2402,79 +2995,86 @@ async function printQ(id) {
    BIND EVENTS
 ========================================================= */
 
-function bind() {
+function bind(){
 
   document
     .querySelectorAll("[data-nav]")
-    .forEach(b => {
+    .forEach(b=>{
 
-      b.onclick = () => {
+      b.onclick = ()=>{
 
         S.view =
           b.dataset.nav;
 
         render();
+
       };
 
     });
 
 
-  $("logout")?.addEventListener(
-    "click",
-    () => signOut(auth)
-  );
+  $("#logout")
+    ?.addEventListener(
+      "click",
+      ()=>signOut(auth)
+    );
 
 
-  $("mlogout")?.addEventListener(
-    "click",
-    () => signOut(auth)
-  );
+  $("#mlogout")
+    ?.addEventListener(
+      "click",
+      ()=>signOut(auth)
+    );
 
 
-  $("add")?.addEventListener(
-    "click",
-    () =>
-      dataModal(
-        S.view === "customers"
+  $("#add")
+    ?.addEventListener(
+      "click",
+      ()=>dataModal(
+        S.view==="customers"
       )
-  );
+    );
 
 
-  $("newq")?.addEventListener(
-    "click",
-    quoteModal
-  );
+  $("#newq")
+    ?.addEventListener(
+      "click",
+      quoteModal
+    );
 
 
-  $("addf")?.addEventListener(
-    "click",
-    followModal
-  );
+  $("#addf")
+    ?.addEventListener(
+      "click",
+      followModal
+    );
 
 
   document
     .querySelectorAll("[data-del]")
-    .forEach(b => {
+    .forEach(b=>{
 
-      b.onclick = async () => {
+      b.onclick = async()=>{
 
-        if (
+        if(
           !confirm(
             "حذف العنصر؟"
           )
-        ) {
+        ){
           return;
         }
 
 
-        try {
+        try{
 
           await deleteDoc(
+
             doc(
               db,
               b.dataset.col,
               b.dataset.del
             )
+
           );
 
 
@@ -2482,16 +3082,15 @@ function bind() {
 
           toast("تم الحذف");
 
-        } catch (e) {
-
-          console.error(e);
+        }catch(x){
 
           toast(
-            e.message ||
-            "حدث خطأ أثناء الحذف",
+            authError(x),
             true
           );
+
         }
+
       };
 
     });
@@ -2499,10 +3098,10 @@ function bind() {
 
   document
     .querySelectorAll("[data-wa]")
-    .forEach(b => {
+    .forEach(b=>{
 
-      b.onclick = () =>
-        share(
+      b.onclick =
+        ()=>share(
           b.dataset.wa
         );
 
@@ -2511,32 +3110,71 @@ function bind() {
 
   document
     .querySelectorAll("[data-pr]")
-    .forEach(b => {
+    .forEach(b=>{
 
-      b.onclick = () =>
-        printQ(
+      b.onclick =
+        ()=>printQ(
           b.dataset.pr
         );
 
     });
+
 }
 
 
 /* =========================================================
-   AUTH STATE
+   🔥 CRITICAL AUTH OBSERVER
 ========================================================= */
+
+/*
+  النسخة القديمة كانت:
+
+  catch(e){
+      toast(...)
+      await signOut(auth)
+  }
+
+  وده هو سبب الرجوع لصفحة الدخول.
+
+  النسخة الجديدة:
+  - لا تعمل signOut عند خطأ Firestore.
+  - تصلح profile تلقائيًا.
+  - تعرض الخطأ الحقيقي.
+*/
 
 onAuthStateChanged(
   auth,
-  async user => {
+  async user=>{
+
+    console.log(
+      "AUTH STATE:",
+      user
+        ? user.email
+        : "SIGNED OUT"
+    );
+
 
     S.user = user;
 
 
-    if (!user) {
+    /* لا تتدخل أثناء التسجيل */
+    if(S.authBusy){
+
+      return;
+
+    }
+
+
+    /* المستخدم خرج */
+    if(!user){
 
       S.profile = null;
       S.company = null;
+
+      S.customers = [];
+      S.products = [];
+      S.quotes = [];
+      S.followups = [];
 
       render();
 
@@ -2544,32 +3182,37 @@ onAuthStateChanged(
     }
 
 
-    try {
+    /*
+      المستخدم مسجل بالفعل.
+      نحاول تحميل بياناته.
+    */
+
+    try{
 
       S.profile =
-        await userData(
-          user.uid
+        await ensureUserProfile(
+          user
         );
 
 
       await load();
 
-    } catch (e) {
+
+    }catch(e){
 
       console.error(
-        "User loading error:",
+        "APP LOAD ERROR:",
         e
       );
 
+      /*
+        لا signOut هنا.
+        المستخدم يظل authenticated
+        حتى نعرف المشكلة.
+      */
 
-      toast(
-        e.message ||
-        "حدث خطأ في تحميل بيانات المستخدم",
-        true
-      );
+      renderSystemError(e);
 
-
-      await signOut(auth);
     }
 
   }
@@ -2581,15 +3224,6 @@ onAuthStateChanged(
 ========================================================= */
 
 render();
-
-console.log(
-  "Tawreedak started successfully"
-);
-
-console.log(
-  "Firebase project:",
-  app.options.projectId
-);
 
 </script>
 
